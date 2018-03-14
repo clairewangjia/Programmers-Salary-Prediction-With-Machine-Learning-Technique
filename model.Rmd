@@ -1,0 +1,546 @@
+---
+title: "Predict salary of programmers in China by supervised learning"
+subtitle: 'DSC5103 Final Report'
+author: "G2Group09: Huang Zijian(A0176583R), Li Jiazhe(A0176576M), Wang Jia(A0176605B), Vignesh Palraj(A0176601J)"
+date: "Nov 2017"
+output:
+  html_document:
+    highlight: tango
+    theme: spacelab
+  pdf_document:
+    highlight: zenburn
+---
+<!--
+comments must be put in an HTML comment form
+-->
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 120)  # set output width
+```
+
+
+Introduction here.
+
+
+## 1. Problem Definition
+
+
+### a. Problem Statement
+
+-----
+
+*** subtitle here ***
+
+
+-----
+
+### b. Data Collection and Processing
+
+-----
+
+*** Data Collection ***
+Programmers’ recruitment information were crawled from www.jobui.com by others and shared on the internet. 10949 lines of recruitment data were in the raw data set. Search number(hits) of the company name on Baidu were crawled to evaluate as fame index.
+
+Data source: 
+
+```{r}
+rawdata <- read.csv("raw_data.csv")
+summary(rawdata)
+head(rawdata)
+```
+
+*** Data Processing ***
+Salary information on the jobui.com is shown by range. We took the average value of the range as our dependent varaibale 'salary_avg'.
+Column Position.name is in text format in Chinese. We want to see how different position affect salary by doing feature engineering. In order to extract key job attributes from position description, we merged similar characters. 
+
+```{r}
+library("jiebaR")
+library("wordcloud")
+library("stringr")
+
+# calculate average salary as y and remove outliers
+rawdata$salary_avg <- as.numeric((rawdata$salary_lower_bound+rawdata$salary_upper_bound)/2)
+box <- boxplot(rawdata$salary_avg)
+rawdata <- subset(rawdata,rawdata$salary_avg < 32.5 & rawdata$salary_avg > 6) # remove outliers
+data <- rawdata[,-c(1,6,7)]
+
+### text mining
+# text cleaning
+data$position.name <- tolower(as.character(data$position.name)) 
+data$position.name <- str_replace_all(data$position.name, "资深", "高级") # combine similar words
+data$position.name <- str_replace_all(data$position.name, "web", "前端")
+data$position.name <- str_replace_all(data$position.name, "网站", "前端")
+data$position.name <- str_replace_all(data$position.name, "客户端", "前端")
+data$position.name <- str_replace_all(data$position.name, "服务端", "后端")
+data$position.name <- str_replace_all(data$position.name, "服务器", "后端")
+data$company.scale <- str_replace_all(data$company.scale, "人", "")
+data$company.scale <- str_replace_all(data$company.scale, "少于", "<")
+data$company.scale <- str_replace_all(data$company.scale, "2000以上", ">2000")
+data$company.scale <- as.factor(data$company.scale)
+data <- subset(data, str_detect(data$position.name, "实习")==FALSE) # delete internships
+```
+
+Subsequently, we did text mining to get the frequency of key attributes of position descriptions. Attributes with word frequency larger than 20 were picked. Some common words which cannot differentiate programmers' positon were not picked, such as "engineer" and "software".
+
+```{r}
+
+# use package "fenci" to get Chinese words in strings
+wk = worker()
+position <- wk[data$position.name]
+position_freq <- table(position) # word frequency table
+seg <- sort(position_freq, decreasing = TRUE)[1:100]
+
+# pick up words we want: 
+words <- c("高级","中级","初级","前端","后端","开发","架构师","运维","游戏","数据","算法","研发")
+position.key <- position[position %in% words]
+position.key.freq <- table(position.key) # word frequency table
+seg.key <- sort(log(position.key.freq), decreasing = TRUE) # take log so as to make the graph pretty
+seg.key
+
+# wordcloud
+colors=brewer.pal(6,"Dark2")
+set.seed(123)
+words.en <- c("senior",	"intermediate",	"junior",	"front.end",	"back.end",	"develop",	"architect",	"operation",	"game",	"data",	"algorithm",	"R.D")
+wordcloud(words.en, seg.key,colors=colors,random.order=F)
+
+```
+
+
+```{r}
+
+# add dummies to data
+for(j in 1:length(words)){
+  for (i in 1:nrow(data)){
+    data[i, j+10] <- ifelse(words[j] %in% wk[data$position.name[i]], 1, 0)
+  }
+  names(data)[j+10] <- words.en[j]
+}
+head(data)
+```
+
+Conduct numeric variable of work experience:
+```{r}
+# change work experience
+data$work.experience.lowerb <- ifelse(data$work.experience=="1-3year",1,ifelse(data$work.experience=="3-5year", 3, ifelse(data$work.experience=="5-10year", 5, ifelse(data$work.experience=="less than 1 year"|data$work.experience=="freshgraduate"|data$work.experience=="unlimited", 0, 10))))
+data$work.experience.upperb <- ifelse(data$work.experience=="1-3year",3,ifelse(data$work.experience=="3-5year", 5, ifelse(data$work.experience=="5-10year", 10, ifelse(data$work.experience=="less than 1 year"|data$work.experience=="unlimited", 1, ifelse(data$work.experience=="freshgraduate", 0, 20)))))
+
+#delete useless columns
+data <- data[,-c(2,8)]
+head(data)
+
+```
+
+
+
+
+-----
+
+### c. Descriptive Statistics/ Data Analysis
+
+-----
+
+*** Data Analysis ***
+1. salary distribution in the whole group
+2. Is salary affected by demand? Demand quantity and salary by location
+3. which language is required mostly
+4. how work experience affect salary
+5. big company or small company?
+
+```{r}
+library("ggplot2")
+# histogram of salary
+ggplot(data, aes(x = salary_avg)) +geom_histogram(binwidth = 2.5, fill = "darkorange", colour = "black") +scale_x_continuous(breaks=seq(0, 30, 5))+geom_vline(aes(xintercept=mean(salary_avg)), color="red", linetype="dashed", size=1)
+
+```
+
+
+```{r}
+require(gridExtra)
+p2 <- ggplot(data, aes(reorder_size(location),fill = factor(location))) + geom_bar(width=0.6)+xlab("location")+ylab("demand")
+reorder_size <- function(x) {
+  factor(x, levels = names(sort(table(x),decreasing = TRUE)))
+}
+p3 <- ggplot(data, aes(x = factor(reorder_size(location)), y=salary_avg, fill = factor(location))) + stat_summary(fun.y="mean", geom="bar",width=0.6)+xlab("location")+ylab("average salary in city")
+grid.arrange(p2, p3, ncol=2)
+```
+
+```{r}
+ggplot(data, aes(reorder_size(required.language))) + geom_bar(width=0.6,fill="darkgrey")+xlab("required.language")+ylab("demand")
+ggplot(data, aes(x = factor(reorder_size(required.language)), y=salary_avg)) + stat_summary(fun.y="mean",fill = "lightblue", geom="bar",width=0.6)+xlab("language")+ylab("average salary by language")
+```
+
+```{r}
+ggplot(data, aes(x = reorder(work.experience, salary_avg, FUN=median), y = salary_avg, fill = factor(work.experience))) +geom_boxplot() 
+ggplot(data, aes(x = reorder(series.level, salary_avg, FUN=median), y = salary_avg, fill = factor(series.level))) +geom_boxplot() 
+```
+
+----
+
+
+
+## 2. Analysis Execution
+
+
+### Methodology
+
+----
+
+
+
+----
+
+### Model Building
+----
+
+3 splits of data were prepared:
+```{r}
+# spilt full data into 3 folds: train set, blender set and test set
+N <- nrow(data)
+set.seed(123)
+train.index <- sample(1:N, round(N/2))
+datahalf <- data[-train.index,]
+M <- nrow(datahalf)
+blender.index <- sample(1:M, round(M/2))
+test.index <- -blender.index
+
+x.train.m <- model.matrix(salary_avg ~ ., data[train.index, ])[, -1]
+y.train <- data[train.index, "salary_avg"]
+x.blender.m <- model.matrix(salary_avg ~ ., datahalf[blender.index, ])[, -1]
+y.blender <- datahalf[blender.index, "salary_avg"]
+x.test.m <- model.matrix(salary_avg ~ ., datahalf[test.index, ])[, -1]
+y.test <- datahalf[test.index, "salary_avg"]
+
+x.train <- data[train.index, -8]
+x.blender <- datahalf[blender.index, -8]
+x.test <- datahalf[test.index, -8]
+
+```
+
+We take train data to train single model and predict with blender data and test data. After building single models, we train an ensemble model by combining single models and use blender data as the train data for it. In the end, different models are compared by test data ***RMSE***.
+
+----
+#### Linear model (without regularization)
+
+----
+
+```{r}
+# StepAIC
+library("MASS")
+lm.all <- lm(salary_avg ~ .-work.experience.lowerb-work.experience.upperb , data = data, subset = train.index)
+summary(lm.all)
+lm.mod <- stepAIC(lm.all, direction="backward")
+summary(lm.mod)
+
+```
+
+
+```{r}
+
+lm.pred <- predict(lm.mod, datahalf[test.index,-c(8,21,22)])
+rmse.lm <- sqrt(mean((lm.pred-y.test)^2))
+lm.blender <- predict(lm.mod, x.blender)
+
+```
+
+
+----
+
+#### Regularized linear model
+
+----
+```{r}
+# construct model matrix for lasso
+library("glmnet")
+set.seed(123)
+fold <- sample(rep(seq(10), length=nrow(x.train)))
+
+# lasso
+lasso.cv <- cv.glmnet(x.train.m, y.train, alpha=1, foldid = fold)
+lasso.lam <- lasso.cv$lambda.1se
+
+predict(lasso.cv, type="coefficient", s=lasso.lam, exact=TRUE)
+# predicitions
+lasso.pred <- predict(lasso.cv, newx=x.test.m, s=lasso.lam)
+rmse.lasso <- sqrt(mean((lasso.pred - y.test)^2))
+lasso.blender <- predict(lasso.cv, newx=x.blender.m, s=lasso.lam)
+```
+
+
+```{r}
+# EN, EN result same as lasso
+# candidates for alpha
+alphas <- seq(0, 1, 0.05)
+# cross-validation to find the best alpha-lambda combination
+en.cv.error <- data.frame(alpha=alphas)
+for (i in 1:length(alphas)){
+  en.cv <- cv.glmnet(x.train.m, y.train, alpha=alphas[i], foldid=fold)
+  en.cv.error[i, "lambda.1se"] <- en.cv$lambda.1se
+  en.cv.error[i, "error.1se"] <- min(en.cv$cvm) + en.cv$cvsd[which.min(en.cv$cvm)]
+}
+en.cv.error
+
+# optimal lambda and alpha
+en.lam <- en.cv.error[which.min(en.cv.error$error.1se), "lambda.1se"]
+en.alpha <- en.cv.error[which.min(en.cv.error$error.1se), "alpha"]
+
+# construct the EN model with optimal alpha and lambda
+en.mod <- glmnet(x.train.m, y.train, alpha=en.alpha)
+predict(en.mod, type="coefficient", s=en.lam, exact=TRUE)
+
+# prediction
+en.pred <- predict(en.mod, newx=x.test.m, s=en.lam)
+rmse.en <- sqrt(mean((en.pred - y.test)^2))
+en.blender <- predict(en.mod, newx=x.blender.m, s=en.lam)
+
+```
+
+
+----
+
+#### Random Forest
+
+----
+
+```{r, echo = TRUE, eval = FALSE}
+
+library("randomForest")
+mse.rfs <- c()
+for(m in 1:21){
+  set.seed(12)
+  rf <- randomForest(salary_avg ~ ., data=data, subset=train.index, mtry=m)
+  mse.rfs[m] <- rf$mse[500]
+}
+opt.num = which.min(mse.rfs)
+
+```
+
+```{r}
+library("randomForest")
+opt.num <- 7
+set.seed(123)
+rf <- randomForest(salary_avg ~ ., data=data, subset = train.index, mtry = opt.num)
+rf.pred <- predict(rf,newdata = x.test)
+rmse.rf <- sqrt(mean((rf.pred-y.test)^2))
+rf.blender <- predict(rf,newdata = x.blender)
+```
+
+
+
+
+```{r}
+
+varImpPlot(rf)
+partialPlot(rf, x.train, x.var="location")
+partialPlot(rf, x.train, x.var="search.num")
+partialPlot(rf, x.train, x.var="required.language")
+
+```
+
+
+----
+
+#### GBM
+
+----
+
+Tunning code:
+
+```{r, echo = TRUE, eval = FALSE}
+
+library("xgboost")
+dtrain <- xgb.DMatrix(data=x.train.m, label=y.train)
+objective <- "reg:linear"
+cv.fold <- 10
+
+# parameter ranges
+max_depths <- c(1, 2, 4, 6, 7, 8)
+etas <- c(0.01, 0.005, 0.001)
+subsamples <- c(0.5, 0.75, 1)
+colsamples <- c(0.6, 0.8, 1)
+
+set.seed(123)
+tune.out <- data.frame()
+for (max_depth in max_depths) {
+  for (eta in etas) {
+    for (subsample in subsamples) {
+      for (colsample in colsamples) {
+        n.max <- round(100 / (eta * sqrt(max_depth)))
+        xgb.cv.fit <- xgb.cv(data = dtrain, objective=objective, nfold=cv.fold, early_stopping_rounds=100, verbose=0,
+                             nrounds=n.max, max_depth=max_depth, eta=eta, subsample=subsample, colsample_bytree=colsample)
+        n.best <- xgb.cv.fit$best_ntreelimit
+        if (objective == "reg:linear") {
+          cv.err <- xgb.cv.fit$evaluation_log$test_rmse_mean[n.best]
+        } else if (objective == "binary:logistic") {
+          cv.err <- xgb.cv.fit$evaluation_log$test_error_mean[n.best]
+        }
+        out <- data.frame(max_depth=max_depth, eta=eta, subsample=subsample, colsample=colsample, n.max=n.max, nrounds=n.best, cv.err=cv.err)
+        tune.out <- rbind(tune.out, out)
+      }
+    }
+  }
+}
+opt <- which.min(tune.out$cv.err)
+max_depth.opt <- tune.out$max_depth[opt]
+eta.opt <- tune.out$eta[opt] 
+subsample.opt <- tune.out$subsample[opt] 
+colsample.opt <- tune.out$colsample[opt] 
+nrounds.opt <- tune.out$nrounds[opt] 
+
+```
+
+After tunning, we get the optimal result with test rmse=:
+
+```{r}
+
+library("xgboost")
+dtrain <- xgb.DMatrix(data=x.train.m, label=y.train)
+dblender <- xgb.DMatrix(data=x.blender.m, label=y.blender)
+dtest <- xgb.DMatrix(data=x.test.m, label=y.test)
+
+# tunning result
+max_depth.opt <- 7
+eta.opt <- 0.05
+subsample.opt <- 1
+colsample.opt <- 1
+
+set.seed(123)
+xgb.cv <- xgb.cv(data = dtrain,  objective="reg:linear", 
+                  nrounds=5000, max_depth=max_depth.opt, eta=eta.opt, subsample=subsample.opt, colsample_bytree=colsample.opt,
+                  nfold=10, early_stopping_rounds=100, verbose = 0)
+nrounds.opt <- xgb.cv$best_ntreelimit
+
+# train model
+xgb.mod <- xgboost(data=dtrain, objective="reg:linear", nround=nrounds.opt, max.depth=max_depth.opt, eta=eta.opt, subsample=subsample.opt, colsample_bytree=colsample.opt, verbose = 0)
+xgb.pred <- predict(xgb.mod, newdata=dtest)
+rmse.xgb <- sqrt(mean((xgb.pred-y.test)^2))
+xgb.blender <- predict(xgb.mod, newdata=dblender)
+
+```
+
+
+----
+
+#### SVM
+
+----
+
+Tuning code:
+```{r, echo = TRUE, eval = FALSE}
+
+library("e1071")
+costs <- c(0.00001,0.0001,0.001,0.01,0.1,1,10)
+gammas <- c(0.01,0.02,0.03,0.04,0.05,0.10,0.2,0.3,0.4,0.5)
+kernels <- c('linear','polynomial','radial','sigmoid')
+svm.tune.result <- expand.grid(cost = costs, gamma = gammas, kernel = kernels)
+svm.tune.result['MSE'] <- 0
+for (i in costs){
+  for (j in gammas){
+    for (x in kernels){
+      svmfit <- svm(salary_avg ~ ., data=data[train.index,],gamma = j, cost = i, kernel = x, cross = 5)
+      svm.tune.result[svm.tune.result$cost == i & svm.tune.result$gamma == j & svm.tune.result$kernel == x,4] <- svmfit$tot.MSE[1]
+      print(svmfit$tot.MSE[1])
+    }
+  }
+}
+
+opt.index <- which.min(svm.tune.result$MSE)
+opt.cost <- svm.tune.result$cost[opt.index]
+opt.gamma <- svm.tune.result$gamma[opt.index]
+opt.kernel <- svm.tune.result$kernel[opt.index]
+
+```
+
+
+After tunning, we get the optimal result with test rmse=:
+
+```{r}
+
+library("e1071")
+opt.cost <- 10
+opt.gamma <- 0.01
+opt.kernel <- "radial"
+opt.svm <- svm(salary_avg ~ ., data=data[train.index,], gamma = opt.gamma, cost = opt.cost, kernel = opt.kernel)
+svm.pred <- predict(opt.svm, newdata = x.test)
+rmse.svm <- sqrt(mean((svm.pred - y.test)^2))
+svm.blender <- predict(opt.svm, newdata = x.blender)
+
+```
+
+
+----
+
+#### Ensemble model
+
+----
+```{r}
+# combine data
+train.data.ensemble <- data.frame(lm.blender,lasso.blender,en.blender,rf.blender,xgb.blender,svm.blender,y.blender)
+colnames(train.data.ensemble) <- c("lm","lasso","en","rf","xgb","svm","y")
+head(train.data.ensemble)
+
+test.data.ensemble <- data.frame(lm.pred,lasso.pred,en.pred,rf.pred,xgb.pred,svm.pred,y.test)
+colnames(test.data.ensemble) <- c("lm","lasso","en","rf","xgb","svm","y")
+head(test.data.ensemble)
+
+# lm
+x.ensemble.m <- model.matrix(y~.,train.data.ensemble)[,-1]
+y.ensemble <- train.data.ensemble$y
+x.ensemble.test.m <- model.matrix(y~.,test.data.ensemble)[,-1]
+y.ensemble.test <- test.data.ensemble$y
+
+lm.ensemble.cv <- cv.glmnet(x.ensemble.m, y.ensemble, alpha=1)
+
+ensemble.lam <- lm.ensemble.cv$lambda.1se
+ensemble.lasso.mod <- glmnet(x.ensemble.m, y.ensemble, alpha=1)
+
+# predicitions
+ensemble.lasso.pred <- predict(ensemble.lasso.mod, newx=x.ensemble.test.m, s=ensemble.lam)
+rmse.ensemble.lm <- sqrt(mean((ensemble.lasso.pred - y.ensemble.test)^2))
+
+```
+
+
+```{r}
+# random forest
+set.seed(123)
+rf.ensemble <- randomForest(y ~ ., data=train.data.ensemble)
+rf.ensemble.pred <- predict(rf.ensemble,newdata = test.data.ensemble[,-7])
+rmse.rf.ensemble <- sqrt(mean((rf.ensemble.pred-test.data.ensemble[,7])^2))
+
+```
+
+
+----
+
+### Model Comparison
+
+----
+
+```{r}
+rmse <- data.frame(rmse.en,rmse.lasso,rmse.lm,rmse.rf,rmse.svm,rmse.xgb,rmse.ensemble.lm,rmse.rf.ensemble)
+sort(rmse)
+```
+
+
+----
+
+
+## 3. Conclusion
+
+----
+
+
+----
+
+
+
+## 4. Future Scope
+
+----
+
+
+----
+
+
+
+***[THE END]***
